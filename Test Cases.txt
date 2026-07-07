@@ -1,0 +1,163 @@
+ Part 1a — Test Design
+
+ Task A: Test Scenarios (20)
+
+ Boundary Cases
+
+1. Candidate total price exactly equals selected total price
+- Preconditions: Selected hotel total = ₹21,000. Candidate X total = ₹21,000, otherwise valid (active, in stock, ≤5km, higher score).
+- Steps: Run recommendation engine for the selected hotel.
+- Expected: Candidate X is excluded — rule requires 'candidate_total_price < selected_total_price' (strict inequality), not '<='.
+
+2. Candidate score exactly equals selected score
+- Preconditions: Selected score = 7.50. Candidate Y computed score = 7.50 exactly, price is cheaper, distance valid.
+- Steps: Run recommendation engine.
+- Expected: Candidate Y is excluded — rule requires 'candidate_score > selected_score' (strict), so a tie does not qualify as "better."
+
+3. Candidate distance exactly 5.000 km
+- Preconditions: Candidate Z is 5.000 km from selected hotel (measured to 3 decimal places), all other rules satisfied.
+- Steps: Run recommendation engine.
+- Expected: Candidate Z is included, assuming "within 5 km" is inclusive (≤5). (Flagged in clarifying questions — behavior must be confirmed with Product.)
+
+4. Candidate distance at 5.001 km
+- Preconditions: Same as above but distance = 5.001 km.
+- Steps: Run recommendation engine.
+- Expected: Candidate excluded per the distance exclusion rule.
+
+5. Candidate with inventory_available = 1 (minimum non-zero stock)
+- Preconditions: Candidate has exactly 1 room available for the stay dates, otherwise qualifies.
+- Steps: Run recommendation engine.
+- Expected: Candidate is treated as available and included (not excluded as "sold out").
+
+6. Fewer than 10 qualifying candidates exist
+- Preconditions: Only 3 hotels in the dataset satisfy all four rules (cheaper, better, ≤5km, in-stock).
+- Steps: Run recommendation engine.
+- Expected: Exactly 3 recommendations are returned, correctly ranked. The system must not pad the list with ineligible hotels to reach 10, and must not error out for returning fewer than 10.
+
+---
+
+ Negative Cases
+
+7. Candidate is the same hotel as the one selected
+- Preconditions: Selected hotel ID = H001. Dataset also contains hotel ID = H001 (self) with different mock price/score to simulate a stale duplicate entry.
+- Steps: Run recommendation engine.
+- Expected: Hotel H001 never appears in its own recommendation list, regardless of price/score used for comparison.
+
+8. Candidate hotel is flagged inactive
+- Preconditions: Candidate A has 'is_active = false', but otherwise cheaper, better, in range, and in stock.
+- Steps: Run recommendation engine.
+- Expected: Candidate A is excluded from results.
+
+9. Candidate has inventory_available = 0 (sold out)
+- Preconditions: Candidate B is sold out for the requested stay dates, otherwise qualifies on all rules.
+- Steps: Run recommendation engine.
+- Expected: Candidate B is excluded from results.
+
+10. Candidate is outside 5 km and outside same locality
+- Preconditions: Candidate C is 12 km away and in a different locality than the selected hotel, but cheaper and better.
+- Steps: Run recommendation engine.
+- Expected: Candidate C is excluded from results.
+
+11. Candidate is better in quality but more expensive
+- Preconditions: Candidate D has a higher score than selected, but 'total_price > selected_total_price'.
+- Steps: Run recommendation engine.
+- Expected: Candidate D is excluded — fails the "cheaper" rule even though it passes "better."
+
+12. Candidate is cheaper but lower quality
+- Preconditions: Candidate E has a lower score than selected, but 'total_price < selected_total_price'.
+- Steps: Run recommendation engine.
+- Expected: Candidate E is excluded — fails the "better" rule even though it passes "cheaper."
+
+
+
+Ranking / Sorting Correctness Cases
+
+13. Tie on ScoreDelta, broken by lowest total price
+- Preconditions: Candidates F and G both have ScoreDelta = 0.42. F total = ₹18,000, G total = ₹18,500.
+- Steps: Run recommendation engine.
+- Expected: F is ranked above G (lower price wins the tie).
+
+14. Tie on ScoreDelta and price, broken by lowest distance
+- Preconditions: Candidates H and I both have ScoreDelta = 0.30 and total = ₹19,000. H is 1.2 km away, I is 3.0 km away.
+- Steps: Run recommendation engine.
+- Expected: H is ranked above I.
+
+15. Tie on ScoreDelta, price, and distance, broken by highest review count
+- Preconditions: Candidates J and K both have ScoreDelta = 0.25, total = ₹20,000, distance = 2.0 km. J has 900 reviews, K has 300 reviews.
+- Steps: Run recommendation engine.
+- Expected: J is ranked above K.
+
+16. More than 10 qualifying candidates exist
+- Preconditions: 14 hotels satisfy all inclusion rules with varying ScoreDelta values.
+- Steps: Run recommendation engine.
+- Expected: Exactly 10 results are returned, strictly ordered by ScoreDelta descending (with the documented tie-breakers applied), and the 4 lowest-ranked qualifying candidates are correctly dropped.
+
+---
+
+Data Correctness Cases
+
+17. Total price calculation across multiple nights
+- Preconditions: Candidate L has nightly_price = ₹4,000 for a 3-night stay.
+- Steps: Run recommendation engine; inspect returned 'total_price'.
+- Expected: 'total_price' = ₹12,000 exactly (nightly_price × nights), with no rounding drift, tax omission, or off-by-one night errors.
+
+18. Mixed currency listings
+- Preconditions: Selected hotel priced in INR. Candidate M's raw rate is stored in USD.
+- Steps: Run recommendation engine.
+- Expected: Candidate M's price is converted to a common currency (INR) using a defined, current exchange rate before the cheaper/score comparisons run. The system must not compare raw numeric values across currencies. (If conversion isn't supported yet, the candidate should be excluded rather than silently mis-compared.)
+
+19. Stale inventory / rate data
+- Preconditions: Candidate N's price and inventory record was last refreshed 48 hours ago; system's freshness SLA is unspecified/assumed to be 24 hours.
+- Steps: Run recommendation engine.
+- Expected: Candidate N is either excluded or flagged as stale per an agreed staleness threshold, and is never presented as a confirmed cheaper/available option with outdated data.
+
+20. Missing amenity data
+- Preconditions: Candidate O has a null/empty amenities list (amenity_match_percent cannot be computed directly).
+- Steps: Run recommendation engine; inspect computed 'Score'.
+- Expected: The system applies a defined default (e.g., amenity_match_percent = 0%) rather than crashing, returning NaN, or silently omitting the amenity term from the Score formula.
+
+
+
+Task B: Clarifying Questions (8)
+
+1. For "comparable location," is the 5 km distance a straight-line (haversine) distance or a driving/routing distance, and is the boundary inclusive ('≤ 5 km') or exclusive ('< 5 km')? How does "same locality" interact with the 5 km rule — is it an OR condition (either qualifies), or does locality match override the distance check entirely?
+
+2. When 'candidate_score == selected_score' or 'candidate_total_price == selected_total_price' exactly, should the candidate be excluded (per strict '>'/'<'), or is there an intended tolerance/epsilon for floating-point comparisons?
+
+3. If all four ranking tie-breakers (ScoreDelta, price, distance, review_count) are identical between two candidates, what determines final order — hotel ID, alphabetical name, or is order undefined/stable-sort by input order?
+
+4. How should prices in different currencies be normalized before comparison — which exchange rate source, how often is it refreshed, and is the rate locked at search time or at booking time?
+
+5. What is the default/fallback behavior when 'review_score' is missing or null for a candidate — exclude the hotel, treat it as 0, or use a category/city average?
+
+6. Is there a staleness threshold for inventory and rate data (e.g., "prices older than X hours must be excluded or re-fetched"), and who owns refreshing that data before it reaches the recommendation engine?
+
+7. How should 'amenity_match_percent' be computed when a candidate has partial or no amenity data — is it 0%, treated as "not applicable" (excluded from the weighted formula and re-normalized), or imputed from similar hotels?
+
+8. How should true duplicate listings (same physical hotel, e.g., same name/address but different internal IDs, possibly from different rate providers) be detected and de-duplicated before ranking, so the same hotel doesn't occupy multiple slots in the top 10?
+
+---
+
+ Part 1b — Bugs Found in the Recommendation
+
+Selected hotel: Skyline Business Hotel — Total ₹21,000, 4★, review score 8.3 (1,240 reviews)
+
+|  | Bug | Row(s) | Explanation |
+|---|-----|--------|-------------|
+| 1 | Selected hotel recommends itself | Row 10 | Skyline Business Hotel (0.0 km, identical price/rating/reviews to the selected hotel) appears in its own recommendation list. This directly violates Exclusion Rule 1: "Exclude same hotel as selected." |
+
+| 2 | Duplicate listing occupies a slot | Rows 1 & 9 | "Orbit Executive Stay" appears twice with identical distance, price, rating, and review count. The "Why Tag" on row 9 literally admits this ("Duplicate listing"). This wastes a recommendation slot that should go to a distinct qualifying hotel. |
+
+| 3 | Distance exceeds the 5 km limit but is still included | Row 3 (Comet Residency, 5.8 km) | Per Exclusion Rule 4, any candidate beyond 5 km (with no locality override stated) must be excluded. 5.8 km > 5 km, so this hotel should not appear at all — yet it's ranked 3 and tagged "Top-rated." |
+
+| 4 | Impossible/out-of-range review score | Row 4 (Nexus Park Hotel, 10.8) | Review scores in this system are on a 0–10 scale (selected hotel scores 8.3, others are all ≤9.1). A score of 10.8 is out of range — almost certainly a data entry or parsing error — yet it's driving the "Highest score" tag and inflating this hotel's computed Score/ranking. |
+
+| 5 | Currency mismatch not normalized | Row 6 (Vertex Corporate Rooms, "$18,900") | Every other row is priced in ₹ (INR); this one is in $ (USD). Comparing 18,900 raw units against ₹21,000 without currency conversion is invalid — at any realistic USD→INR rate, $18,900 would actually be far more expensive than the selected hotel, meaning the "Best price" tag is likely wrong and this candidate probably fails the "cheaper" rule once correctly converted. |
+
+| 6 | Candidate priced higher than selected but tagged "Cheaper" | Row 5 (Zenith Inn, ₹22,400) | ₹22,400 > ₹21,000 (the selected hotel's total). This fails the core "Cheaper" rule ('candidate_total_price < selected_total_price') and should have been excluded entirely — instead it's ranked 5 and mislabeled "Cheaper." |
+
+| 7 | Ranking order doesn't reflect the stated sort rule | Rows 1–4 | The spec requires sorting by highest ScoreDelta first. Row 4 is tagged "Highest score" (implying the top ScoreDelta) but is ranked 4, below three hotels that presumably have lower scores. If its score truly were highest (setting aside bug 4), it should rank 1 — the displayed order is inconsistent with the documented ranking rule. |
+
+| 8 | Effective valid recommendation count is far below 10 | Whole table | Once rows 3 (>5km), 4 (invalid score), 5 (more expensive), 6 (unconverted currency, likely more expensive), 9 (duplicate), and 10 (self) are correctly excluded, only rows 1, 2, 7, and 8 remain — just 4 valid recommendations instead of the required 10. The system needs to backfill from additional qualifying candidates rather than padding the list with hotels that violate the rules. |
+
+| 9 (needs data to confirm) | Star rating below selected but included | Row 7 (Aurora Budget Plus, 3★ vs. selected 4★) | Not necessarily a bug — a lower star rating can still yield a higher weighted Score if review_score and amenity_match_percent compensate — but this cannot be verified without the underlying 'amenity_match_percent' value, so it should be spot-checked against the actual Score formula rather than assumed correct. |
